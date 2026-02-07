@@ -3,7 +3,6 @@ package com.soarclient.management.mod.impl.hud;
 import com.soarclient.event.EventBus;
 import com.soarclient.event.client.RenderHotbarEvent;
 import com.soarclient.event.client.RenderSkiaEvent;
-import com.soarclient.event.client.RenderSkiaPostEvent;
 import com.soarclient.management.mod.api.hud.HUDMod;
 import com.soarclient.management.mod.settings.impl.BooleanSetting;
 import com.soarclient.skia.font.Icon;
@@ -22,39 +21,39 @@ public class ModernHotBarMod extends HUDMod {
 
     private static ModernHotBarMod instance;
 
-    public static ModernHotBarMod getInstance() {
-        if (instance == null) {
-            instance = new ModernHotBarMod();
-        }
-        return instance;
-    }
+    private final Color COLOR_SURFACE = new Color(231, 224, 236, 160);
+    private final Color COLOR_ON_SURFACE = new Color(29, 27, 32);
+    private final Color COLOR_PRIMARY = new Color(160, 140, 218);
+    private final Color COLOR_ACCENT = new Color(232, 222, 248);
+    private final Color COLOR_ERR = new Color(218, 117, 111);
+    private final Color COLOR_ERR_BG = new Color(249, 222, 220);
+    private final Color COLOR_TRT = new Color(225, 145, 221);
+    private final Color COLOR_TRT_BG = new Color(255, 216, 228);
 
-    private final BooleanSetting showArmorBar = new BooleanSetting("setting.showarmorbar", "setting.showarmorbar.description", Icon.SETTINGS, this, true);
-    private final BooleanSetting showExperienceBar = new BooleanSetting("setting.showexperiencebar", "setting.showexperiencebar.description", Icon.SETTINGS, this, true);
-    private final BooleanSetting showNumericalValues = new BooleanSetting("setting.shownumericalvalues", "setting.shownumericalvalues.description", Icon.SETTINGS, this, true);
+    private final BooleanSetting showExperienceBar = new BooleanSetting("setting.showexperiencebar", "Exp Bar", Icon.SETTINGS, this, true);
+    private final BooleanSetting showNumericalValues = new BooleanSetting("setting.shownumericalvalues", "Values", Icon.SETTINGS, this, true);
 
     private long lastTimeNanos = System.nanoTime();
-    private int visualSelectedSlot = -1;
-    private int animStartSlot = -1;
     private int animTargetSlot = -1;
     private float animProgress = 1f;
-    private boolean animating = false;
-    private static final float SELECTION_ANIM_DURATION = 0.18f;
     private float animatedSlotX = 0f;
+    private float stretch = 0f;
 
-    private float displayedExpFillW = 0f;
-    private float displayedAbsorptionFillW = 0f;
-    private float displayedHealthFillW = 0f;
-    private float displayedArmorFillW = 0f;
-    private float displayedHungerFillW = 0f;
-    private static final float BAR_ANIM_DURATION = 0.12f;
+    private float dispHP = 0f;
+    private float dispHunger = 0f;
+    private float dispExp = 0f;
+    private float offhandAlpha = 0f;
 
     public ModernHotBarMod() {
-        super("mod.modernhotbar.name", "mod.modernhotbar.desc", Icon.SETTINGS);
+        super("mod.modernhotbar.name", "MD3 Hotbar", Icon.SETTINGS);
         instance = this;
     }
 
-    @SuppressWarnings("unused")
+    public static ModernHotBarMod getInstance() {
+        if (instance == null) instance = new ModernHotBarMod();
+        return instance;
+    }
+
     public final EventBus.EventListener<RenderSkiaEvent> onRenderSkia = event -> {
         MinecraftClient mc = MinecraftClient.getInstance();
         PlayerEntity player = mc.player;
@@ -64,267 +63,119 @@ public class ModernHotBarMod extends HUDMod {
         float delta = (now - lastTimeNanos) / 1_000_000_000.0f;
         lastTimeNanos = now;
 
-        handleAnimation(player, delta);
+        updateMotion(player, delta);
 
-        int scaledWidth = mc.getWindow().getScaledWidth();
-        int scaledHeight = mc.getWindow().getScaledHeight();
+        float sw = mc.getWindow().getScaledWidth();
+        float sh = mc.getWindow().getScaledHeight();
 
-        float hotbarX = scaledWidth / 2f - 91f;
-        float hotbarY = scaledHeight - 22f;
-
-        position.setSize(182f, 22f);
-        position.setPosition(hotbarX, hotbarY);
+        float hotbarW = 182f + 16f;
+        float hotbarH = 28f;
+        float x = (sw - hotbarW) / 2f;
+        float y = sh - hotbarH - 12f;
 
         begin();
 
-        drawBackground(hotbarX, hotbarY, 182f, 22f);
-        float slotX = animatedSlotX;
-        drawBackground(hotbarX + slotX, hotbarY, 22f, 22f);
+        Skia.drawRoundedRect(x, y, hotbarW, hotbarH, 8f, COLOR_SURFACE);
 
-        if (!player.getOffHandStack().isEmpty()) {
-            float offhandSlotX = hotbarX - 22f - 4f;
-            drawBackground(offhandSlotX, hotbarY, 22f, 22f);
+        boolean hasOffhand = !player.getOffHandStack().isEmpty();
+        offhandAlpha = lerp(offhandAlpha, hasOffhand ? 1f : 0f, delta / 0.2f);
+
+        if (offhandAlpha > 0.01f) {
+            float offSize = 28f;
+            float offX = x - offSize - 6f;
+            int alphaInt = (int)(offhandAlpha * 160);
+            Color offBg = new Color(COLOR_SURFACE.getRed(), COLOR_SURFACE.getGreen(), COLOR_SURFACE.getBlue(), alphaInt);
+            Skia.drawRoundedRect(offX, y, offSize, hotbarH, 8f, offBg);
         }
 
-        float barWidth = 81f;
-        float barHeight = 7.8f;
-        float barSpacing = 2f;
-
-        float expX = scaledWidth / 2f - 91f;
-        float expHeight = 4f;
-        float expWidth = 182f;
-        float expY = hotbarY - expHeight - barSpacing;
-
-        if (showExperienceBar.isEnabled() && !player.isCreative()) {
-            float experience = player.experienceProgress;
-
-            drawBackground(expX, expY, expWidth, expHeight);
-            float expFillW = expWidth * experience;
-            float expTarget = Math.max(0f, expFillW);
-            float tExp = Math.min(1f, delta / Math.max(0.0001f, BAR_ANIM_DURATION));
-            float expEased = 1f - (float)Math.pow(1f - tExp, 3);
-            displayedExpFillW = displayedExpFillW + (expTarget - displayedExpFillW) * expEased;
-            if (displayedExpFillW > 0f) {
-                if (Math.abs(displayedExpFillW - expWidth) < 0.001f) {
-                    Skia.drawRoundedRect(expX, expY, displayedExpFillW, expHeight, getRadius(), new Color(60, 179, 113));
-                } else {
-                    Skia.drawRoundedRectVarying(expX, expY, displayedExpFillW, expHeight, getRadius(), 0f, 0f, getRadius(), new Color(60, 179, 113));
-                }
-            }
-        }
-
-        float healthBarY = expY - barHeight - barSpacing;
-        float armorBarY = healthBarY - barHeight - barSpacing;
-        float absorptionBarY = armorBarY - barHeight - barSpacing;
-
-        float healthX = scaledWidth / 2f - 91f;
-        float hungerX = scaledWidth / 2f + 91f - barWidth;
+        float indicatorW = 22f + (stretch * 12f);
+        float indicatorX = x + 8f + animatedSlotX - (stretch * 6f) - 1f;
+        Skia.drawRoundedRect(indicatorX, y + 3f, indicatorW, 22f, 6f, COLOR_ACCENT);
 
         if (!player.isCreative()) {
-            float absorption = player.getAbsorptionAmount();
-            float maxHealth = Math.max(1f, player.getMaxHealth());
-            float absorptionPercentage = MathHelper.clamp(absorption / maxHealth, 0.0f, 1.0f);
-            float absorptionFillW = barWidth * absorptionPercentage;
-            float absorptionTarget = Math.max(0f, absorptionFillW);
-            float tAbs = Math.min(1f, delta / Math.max(0.0001f, BAR_ANIM_DURATION));
-            float absEased = 1f - (float)Math.pow(1f - tAbs, 3);
-            displayedAbsorptionFillW = displayedAbsorptionFillW + (absorptionTarget - displayedAbsorptionFillW) * absEased;
-            if (displayedAbsorptionFillW > 0f) {
-                drawBackground(healthX, absorptionBarY, barWidth, barHeight);
-                if (Math.abs(displayedAbsorptionFillW - barWidth) < 0.001f) {
-                    Skia.drawRoundedRect(healthX, absorptionBarY, displayedAbsorptionFillW, barHeight, getRadius(), new Color(255, 215, 0));
-                } else {
-                    Skia.drawRoundedRectVarying(healthX, absorptionBarY, displayedAbsorptionFillW, barHeight, getRadius(), 0f, 0f, getRadius(), new Color(255, 215, 0));
-                }
-                if (showNumericalValues.isEnabled()) {
-                    String absorptionText = String.valueOf((int) absorption);
-                    Skia.drawHeightCenteredText(absorptionText, healthX + 4f, absorptionBarY + barHeight / 2f, Color.WHITE, Fonts.getRegular(9f));
-                }
-            }
+            float barW = 75f;
+            float barH = 7f;
+            float sY = y - barH - 10f;
 
-            float health = player.getHealth();
-            float healthPercentage = MathHelper.clamp(health / maxHealth, 0.0f, 1.0f);
-            float healthFillW = barWidth * healthPercentage;
-            float healthTarget = Math.max(0f, healthFillW);
-            float tHealth = Math.min(1f, delta / Math.max(0.0001f, BAR_ANIM_DURATION));
-            float healthEased = 1f - (float)Math.pow(1f - tHealth, 3);
-            displayedHealthFillW = displayedHealthFillW + (healthTarget - displayedHealthFillW) * healthEased;
-            drawBackground(healthX, healthBarY, barWidth, barHeight);
-            if (displayedHealthFillW > 0f) {
-                if (Math.abs(displayedHealthFillW - barWidth) < 0.001f) {
-                    Skia.drawRoundedRect(healthX, healthBarY, displayedHealthFillW, barHeight, getRadius(), new Color(205, 50, 50));
-                } else {
-                    Skia.drawRoundedRectVarying(healthX, healthBarY, displayedHealthFillW, barHeight, getRadius(), 0f, 0f, getRadius(), new Color(205, 50, 50));
-                }
-            }
-            if (showNumericalValues.isEnabled()) {
-                String healthText = String.valueOf((int) health);
-                Skia.drawHeightCenteredText(healthText, healthX + 4f, healthBarY + barHeight / 2f, Color.WHITE, Fonts.getRegular(9f));
-            }
+            dispHP = lerp(dispHP, barW * MathHelper.clamp(player.getHealth() / player.getMaxHealth(), 0, 1), delta / 0.25f);
+            drawBar(x, sY, barW, barH, dispHP, COLOR_ERR, COLOR_ERR_BG, (int)player.getHealth() + "");
+
+            dispHunger = lerp(dispHunger, barW * MathHelper.clamp(player.getHungerManager().getFoodLevel() / 20f, 0, 1), delta / 0.25f);
+            drawBar(x + hotbarW - barW, sY, barW, barH, dispHunger, COLOR_TRT, COLOR_TRT_BG, (int)player.getHungerManager().getFoodLevel() + "");
         }
 
-        if (showArmorBar.isEnabled() && player.getArmor() > 0 && !player.isCreative()) {
-            float armor = player.getArmor();
-            float armorPercentage = MathHelper.clamp(armor / 20.0f, 0.0f, 1.0f);
-            float armorFillW = barWidth * armorPercentage;
-            float armorTarget = Math.max(0f, armorFillW);
-            float tArmor = Math.min(1f, delta / Math.max(0.0001f, BAR_ANIM_DURATION));
-            float armorEased = 1f - (float)Math.pow(1f - tArmor, 3);
-            displayedArmorFillW = displayedArmorFillW + (armorTarget - displayedArmorFillW) * armorEased;
-            drawBackground(healthX, armorBarY, barWidth, barHeight);
-            if (displayedArmorFillW > 0f) {
-                if (Math.abs(displayedArmorFillW - barWidth) < 0.001f) {
-                    Skia.drawRoundedRect(healthX, armorBarY, displayedArmorFillW, barHeight, getRadius(), new Color(150,150,150));
-                } else {
-                    Skia.drawRoundedRectVarying(healthX, armorBarY, displayedArmorFillW, barHeight, getRadius(), 0f, 0f, getRadius(), new Color(150,150,150));
-                }
-            }
-            if (showNumericalValues.isEnabled()) {
-                String armorText = String.valueOf(player.getArmor());
-                Skia.drawHeightCenteredText(armorText, healthX + 4f, armorBarY + barHeight / 2f, Color.WHITE, Fonts.getRegular(9f));
-            }
-        }
-
-        if (!player.isCreative()) {
-            float hunger = player.getHungerManager().getFoodLevel();
-            float hungerPercentage = MathHelper.clamp(hunger / 20.0f, 0.0f, 1.0f);
-            float hungerFillW = barWidth * hungerPercentage;
-            float hungerTarget = Math.max(0f, hungerFillW);
-            float tHunger = Math.min(1f, delta / Math.max(0.0001f, BAR_ANIM_DURATION));
-            float hungerEased = 1f - (float)Math.pow(1f - tHunger, 3);
-            displayedHungerFillW = displayedHungerFillW + (hungerTarget - displayedHungerFillW) * hungerEased;
-            drawBackground(hungerX, healthBarY, barWidth, barHeight);
-            if (displayedHungerFillW > 0f) {
-                float hungerFillX = hungerX + (barWidth - displayedHungerFillW);
-                if (Math.abs(displayedHungerFillW - barWidth) < 0.001f) {
-                    Skia.drawRoundedRect(hungerFillX, healthBarY, displayedHungerFillW, barHeight, getRadius(), new Color(218,165,32));
-                } else {
-                    Skia.drawRoundedRectVarying(hungerFillX, healthBarY, displayedHungerFillW, barHeight, 0f, getRadius(), getRadius(), 0f, new Color(218,165,32));
-                }
-            }
-            if (showNumericalValues.isEnabled()) {
-                String hungerText = String.valueOf((int) hunger);
-                Skia.drawHeightCenteredText(hungerText, hungerX + 4f, healthBarY + barHeight / 2f, Color.WHITE, Fonts.getRegular(9f));
-            }
+        if (showExperienceBar.isEnabled() && player.experienceProgress > 0) {
+            float eW = hotbarW - 16f;
+            dispExp = lerp(dispExp, eW * player.experienceProgress, delta / 0.25f);
+            Skia.drawRoundedRect(x + 8f, y + 1.5f, eW, 2f, 1f, new Color(255, 255, 255, 60));
+            Skia.drawRoundedRect(x + 8f, y + 1.5f, dispExp, 2f, 1f, COLOR_PRIMARY);
         }
 
         finish();
     };
 
-    private void handleAnimation(PlayerEntity player, float delta) {
-        int currentSlot = player.getInventory().selectedSlot;
-        if (visualSelectedSlot == -1) {
-            visualSelectedSlot = currentSlot;
-            animStartSlot = currentSlot;
-            animTargetSlot = currentSlot;
-            animatedSlotX = currentSlot * 20f;
-            animProgress = 1f;
-            animating = false;
+    private void drawBar(float x, float y, float w, float h, float fW, Color c, Color bg, String v) {
+        Skia.drawRoundedRect(x, y, w, h, 3f, bg);
+        if (fW > 0) Skia.drawRoundedRect(x, y, fW, h, 3f, c);
+        if (showNumericalValues.isEnabled() && v != null) {
+            Skia.drawHeightCenteredText(v, x + 5f, y + h/2f, COLOR_ON_SURFACE, Fonts.getRegular(6.5f));
         }
-
-        if (currentSlot != animTargetSlot) {
-            animStartSlot = Math.round(animatedSlotX / 20f);
-            animTargetSlot = currentSlot;
-            animProgress = 0f;
-            animating = true;
-        }
-
-        if (animating) {
-            animProgress += delta / Math.max(0.0001f, SELECTION_ANIM_DURATION);
-            if (animProgress >= 1f) {
-                animProgress = 1f;
-                animating = false;
-                visualSelectedSlot = animTargetSlot;
-            }
-        }
-
-        float eased = 1f - (float)Math.pow(1f - animProgress, 3);
-        float startX = animStartSlot * 20f;
-        float targetX = animTargetSlot * 20f;
-        animatedSlotX = startX + (targetX - startX) * eased;
     }
 
-    @SuppressWarnings("unused")
-    public final EventBus.EventListener<RenderSkiaPostEvent> onRenderSkiaPost = event -> {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null) return;
-
-        float drawX = getX();
-        float drawY = getY();
-
-        Skia.save();
-        try {
-            for (int i = 0; i < 9; i++) {
-                ItemStack stack = mc.player.getInventory().getStack(i);
-                if (!stack.isEmpty() && stack.getCount() > 1) {
-                    String countText = String.valueOf(stack.getCount());
-                    float textWidth = Skia.getTextBounds(countText, Fonts.getRegular(9f)).getWidth();
-                    float textXBase = drawX + (i * 20f) + 19f - textWidth;
-                    float textY = drawY + 11f;
-                    Skia.drawText(countText, textXBase + 0.5f, textY + 0.5f, new Color(0,0,0,160), Fonts.getRegular(9f));
-                    Skia.drawText(countText, textXBase, textY, Color.WHITE, Fonts.getRegular(9f));
-                }
-            }
-
-            ItemStack offhand = mc.player.getOffHandStack();
-            if (!offhand.isEmpty() && offhand.getCount() > 1) {
-                String countText = String.valueOf(offhand.getCount());
-                float textWidth = Skia.getTextBounds(countText, Fonts.getRegular(9f)).getWidth();
-                float offhandSlotX = drawX - 22f - 4f;
-                float textX = offhandSlotX + 19f - textWidth;
-                float textY = drawY + 11f;
-                Skia.drawText(countText, textX + 0.5f, textY + 0.5f, new Color(0,0,0,160), Fonts.getRegular(9f));
-                Skia.drawText(countText, textX, textY, Color.WHITE, Fonts.getRegular(9f));
-            }
-        } finally {
-            Skia.restore();
+    private void updateMotion(PlayerEntity p, float d) {
+        int slot = p.getInventory().selectedSlot;
+        if (animTargetSlot == -1) {
+            animTargetSlot = slot;
+            animatedSlotX = slot * 20f;
         }
-    };
 
-    @SuppressWarnings("unused")
+        if (slot != animTargetSlot) {
+            animTargetSlot = slot;
+            animProgress = 0f;
+        }
+
+        if (animProgress < 1f) {
+            animProgress = Math.min(1f, animProgress + d / 0.35f);
+            float eased = 1f - (float)Math.pow(1f - animProgress, 4);
+            float targetX = animTargetSlot * 20f;
+            float diff = targetX - animatedSlotX;
+            animatedSlotX += diff * eased;
+            stretch = MathHelper.clamp(Math.abs(diff) / 60f, 0, 0.8f) * (1f - animProgress);
+        } else {
+            stretch = lerp(stretch, 0, d / 0.2f);
+        }
+    }
+
     public final EventBus.EventListener<RenderHotbarEvent> onRenderHotbarEvent = event -> {
-        DrawContext context = event.getContext();
-        if (context == null) return;
+        DrawContext ctx = event.getContext();
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player == null) return;
-
+        if (ctx == null || mc.player == null) return;
         event.setCancelled(true);
-
-        float drawX = getX();
-        float drawY = getY();
+        float hX = (mc.getWindow().getScaledWidth() - (182f + 16f)) / 2f;
+        float hY = mc.getWindow().getScaledHeight() - 28f - 12f;
 
         for (int i = 0; i < 9; i++) {
-            ItemStack stack = mc.player.getInventory().getStack(i);
-            if (!stack.isEmpty()) {
-                int itemX = (int)(drawX + i * 20f + 3);
-                int itemY = (int)(drawY + 3);
-                renderItem(stack, itemX, itemY, context);
+            ItemStack s = mc.player.getInventory().getStack(i);
+            if (!s.isEmpty()) {
+                int ix = (int)(hX + 8f + i * 20f + 2);
+                int iy = (int)(hY + 6);
+                ctx.drawItem(s, ix, iy);
+                ctx.drawStackOverlay(mc.textRenderer, s, ix, iy);
             }
         }
 
         ItemStack offhand = mc.player.getOffHandStack();
-        if (!offhand.isEmpty()) {
-            float offhandSlotX = drawX - 22f - 4f;
-            int offhandX = (int)(offhandSlotX + 3);
-            int offhandY = (int)(drawY + 3);
-            renderItem(offhand, offhandX, offhandY, context);
+        if (!offhand.isEmpty() && offhandAlpha > 0.5f) {
+            float offX = hX - 28f - 6f;
+            int ix = (int)(offX + 6);
+            int iy = (int)(hY + 6);
+            ctx.drawItem(offhand, ix, iy);
+            ctx.drawStackOverlay(mc.textRenderer, offhand, ix, iy);
         }
     };
 
-    private void renderItem(ItemStack stack, int x, int y, DrawContext context) {
-        if (context != null) {
-            context.drawItem(stack, x, y);
-        }
-    }
+    private float lerp(float s, float e, float t) { return s + (e - s) * MathHelper.clamp(t, 0, 1); }
 
     @Override
-    public void onEnable() {
-        super.onEnable();
-        position.setSize(182f, 22f);
-    }
-
-    @Override
-    public float getRadius() {
-        return 4.0f;
-    }
+    public float getRadius() { return 8.0f; }
 }
